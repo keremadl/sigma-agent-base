@@ -3,7 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { MessageBubble, ValidationInfo } from "./MessageBubble";
-import { StreamEvent, streamChat } from "../lib/api";
+import {
+  StreamEvent,
+  streamChat,
+  ConversationMessage,
+  getConversationMessages,
+} from "../lib/api";
 
 type MessageRole = "user" | "assistant";
 
@@ -23,12 +28,29 @@ const MODE_OPTIONS: { value: Mode; label: string; description: string }[] = [
   { value: "fast", label: "Fast (Quick)", description: "Instant responses" },
 ];
 
-export function ChatInterface() {
+interface ChatInterfaceProps {
+  conversationId?: string | null;
+  onConversationChange?: (id: string | null) => void;
+  onNewChat?: () => void;
+  onDeleteConversation?: (id: string) => void;
+}
+
+export function ChatInterface({
+  conversationId: externalConversationId,
+  onConversationChange,
+  onNewChat,
+  onDeleteConversation,
+}: ChatInterfaceProps = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [currentMode, setCurrentMode] = useState<Mode>("auto");
   const [error, setError] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(
+    externalConversationId || null
+  );
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const isNavigatingRef = useRef(false); // Track if we're navigating from Sidebar vs. creating via stream
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -63,6 +85,72 @@ export function ChatInterface() {
     }
   }, []);
 
+
+  // Load messages when conversationId changes (only if navigating from Sidebar, not during streaming)
+  useEffect(() => {
+    // If explicitly navigating from Sidebar, always load (even if streaming)
+    if (isNavigatingRef.current) {
+      isNavigatingRef.current = false;
+      // Continue to load messages below
+    } else {
+      // Skip loading if:
+      // 1. We're currently streaming (conversation was just created via stream)
+      // 2. We already have messages displayed (they're being streamed)
+      if (isStreaming || messages.length > 0) {
+        return;
+      }
+    }
+    
+    if (conversationId) {
+      const loadMessages = async () => {
+        setIsLoadingMessages(true);
+        try {
+          const dbMessages = await getConversationMessages(conversationId);
+          // Map ConversationMessage[] to ChatMessage[]
+          const mappedMessages: ChatMessage[] = dbMessages.map((msg) => ({
+            role: msg.role as MessageRole,
+            content: msg.content,
+            thinking: msg.thinking || undefined,
+          }));
+          setMessages(mappedMessages);
+        } catch (err) {
+          console.error("Failed to load messages:", err);
+          setError(err instanceof Error ? err.message : "Failed to load messages");
+        } finally {
+          setIsLoadingMessages(false);
+        }
+      };
+      loadMessages();
+    } else {
+      // New chat - clear messages
+      setMessages([]);
+    }
+  }, [conversationId, isStreaming]);
+
+  // Sync external conversationId prop
+  useEffect(() => {
+    if (externalConversationId !== undefined) {
+      setConversationId(externalConversationId);
+    }
+  }, [externalConversationId]);
+
+  const handleSelectConversation = (id: string | null) => {
+    isNavigatingRef.current = true; // Mark as explicit navigation
+    setConversationId(id);
+    if (onConversationChange) {
+      onConversationChange(id);
+    }
+  };
+
+  const handleNewChat = () => {
+    setConversationId(null);
+    setMessages([]);
+    if (onNewChat) {
+      onNewChat();
+    }
+  };
+
+
   const handleSend = async () => {
     if (!input.trim() || isStreaming) return;
 
@@ -88,6 +176,7 @@ export function ChatInterface() {
     let answerBuffer = "";
     let queryType: string | undefined;
     let validation: ValidationInfo | undefined;
+    let newConversationId: string | null = conversationId;
 
     try {
       await streamChat(
@@ -98,9 +187,21 @@ export function ChatInterface() {
           })),
           mode: currentMode,
           includeThinking: true,
+          conversationId: conversationId,
         },
         (event: StreamEvent) => {
-          if (event.type === "classification") {
+          if (event.type === "conversation") {
+            // Backend returned conversation_id (new or existing)
+            newConversationId = event.conversation_id || null;
+            if (newConversationId && newConversationId !== conversationId) {
+              // Don't set isNavigatingRef - this is a stream-created conversation
+              // We don't want to trigger message reload
+              setConversationId(newConversationId);
+              if (onConversationChange) {
+                onConversationChange(newConversationId);
+              }
+            }
+          } else if (event.type === "classification") {
             queryType = event.query_type;
           } else if (event.type === "chunk") {
             if (event.section === "thinking") {
@@ -134,6 +235,8 @@ export function ChatInterface() {
           setError(err);
         }
       );
+
+      // Refresh conversations list after message is sent (triggered by parent via onConversationChange)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -149,7 +252,7 @@ export function ChatInterface() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col bg-slate-950 text-slate-50">
+    <div className="flex h-full flex-col bg-slate-950 text-slate-50">
       {/* Header */}
       <header className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
         <div>
@@ -187,17 +290,25 @@ export function ChatInterface() {
       {/* Messages */}
       <main className="flex-1 overflow-y-auto px-4 py-4">
         <div className="mx-auto flex max-w-3xl flex-col">
-          {messages.map((msg, idx) => (
-            <MessageBubble
-              key={idx}
-              role={msg.role}
-              content={msg.content}
-              thinking={msg.thinking}
-              queryType={msg.queryType}
-              validation={msg.validation}
-            />
-          ))}
-          <div ref={scrollRef} />
+          {isLoadingMessages ? (
+            <div className="text-center text-slate-400 text-sm py-8">
+              Loading conversation...
+            </div>
+          ) : (
+            <>
+              {messages.map((msg, idx) => (
+                <MessageBubble
+                  key={idx}
+                  role={msg.role}
+                  content={msg.content}
+                  thinking={msg.thinking}
+                  queryType={msg.queryType}
+                  validation={msg.validation}
+                />
+              ))}
+              <div ref={scrollRef} />
+            </>
+          )}
         </div>
       </main>
 

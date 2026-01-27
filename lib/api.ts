@@ -1,5 +1,6 @@
 export interface StreamEvent {
-  type: "classification" | "chunk" | "validation" | "error";
+  type: "conversation" | "classification" | "chunk" | "validation" | "error";
+  conversation_id?: string;
   query_type?: string;
   section?: string;
   content?: string;
@@ -7,14 +8,31 @@ export interface StreamEvent {
   message?: string;
 }
 
+export interface Conversation {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationMessage {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant";
+  content: string;
+  thinking?: string | null;
+  created_at: string;
+}
+
 interface StreamChatArgs {
   messages: { role: string; content: string }[];
   mode: "auto" | "pro" | "fast";
   includeThinking: boolean;
+  conversationId?: string | null;
 }
 
 export async function streamChat(
-  { messages, mode, includeThinking }: StreamChatArgs,
+  { messages, mode, includeThinking, conversationId }: StreamChatArgs,
   onEvent: (event: StreamEvent) => void,
   onError?: (error: string) => void
 ): Promise<void> {
@@ -27,6 +45,7 @@ export async function streamChat(
         mode,
         stream: true,
         include_thinking: includeThinking,
+        conversation_id: conversationId || null,
       }),
     });
 
@@ -91,5 +110,69 @@ export async function saveApiKeyToBackend(
   } catch (error) {
     console.error(`Error saving API key for ${model}:`, error);
     return false;
+  }
+}
+
+export async function getConversations(): Promise<Conversation[]> {
+  try {
+    const response = await fetch("http://127.0.0.1:8765/conversations");
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch conversations: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.conversations || [];
+  } catch (error) {
+    console.error("Error fetching conversations:", error);
+    throw error;
+  }
+}
+
+export async function getConversationMessages(
+  conversationId: string
+): Promise<ConversationMessage[]> {
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:8765/conversations/${conversationId}`
+    );
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error("Conversation not found");
+      }
+      throw new Error(`Failed to fetch messages: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.messages || [];
+  } catch (error) {
+    console.error("Error fetching conversation messages:", error);
+    throw error;
+  }
+}
+
+export async function deleteConversation(
+  conversationId: string
+): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:8765/conversations/${conversationId}`,
+      {
+        method: "DELETE",
+      }
+    );
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error("Conversation not found");
+      }
+      throw new Error(`Failed to delete conversation: ${response.status}`);
+    }
+
+    return true;
+  } catch (error) {
+    console.error("Error deleting conversation:", error);
+    throw error;
   }
 }

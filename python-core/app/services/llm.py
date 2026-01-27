@@ -1,6 +1,7 @@
 from typing import AsyncGenerator, List, Dict, Any
 import os
 import logging
+import re
 
 import litellm
 
@@ -22,6 +23,7 @@ class TagParser:
         self.state = "outside"  # outside, in_thinking, in_answer
         self.buffer = ""  # Main buffer for accumulating content
         self.current_content = ""  # Content being accumulated for current section
+        self.has_yielded_answer = False  # Track if we've yielded any answer content
         # Tag definitions
         self.THINKING_OPEN = "<thinking>"
         self.THINKING_CLOSE = "</thinking>"
@@ -64,6 +66,7 @@ class TagParser:
                         pre_content = self.buffer[:thinking_start].strip()
                         if pre_content:
                             results.append({"section": "answer", "content": pre_content})
+                            self.has_yielded_answer = True
                             logger.info(f"TagParser: Found content before <thinking> tag, yielding as answer ({len(pre_content)} chars)")
                     
                     # Strip the tag and switch to thinking mode
@@ -80,6 +83,7 @@ class TagParser:
                         pre_content = self.buffer[:answer_start].strip()
                         if pre_content:
                             results.append({"section": "answer", "content": pre_content})
+                            self.has_yielded_answer = True
                             logger.info(f"TagParser: Found content before <answer> tag, yielding as answer ({len(pre_content)} chars)")
                     
                     # Strip the tag and switch to answer mode
@@ -106,6 +110,7 @@ class TagParser:
                             content_to_yield = self.buffer[:safe_to_yield_len]
                             if content_to_yield.strip():
                                 results.append({"section": "answer", "content": content_to_yield})
+                                self.has_yielded_answer = True
                                 logger.debug(f"TagParser: Yielding buffered content as answer ({len(content_to_yield)} chars)")
                             self.buffer = self.buffer[safe_to_yield_len:]  # Keep last MAX_TAG_LEN chars
                     break
@@ -153,6 +158,7 @@ class TagParser:
                     content_to_yield = self.buffer[:answer_end]
                     if content_to_yield:
                         results.append({"section": "answer", "content": content_to_yield})
+                        self.has_yielded_answer = True
                         logger.info(f"TagParser: Exiting ANSWER mode, yielded {len(content_to_yield)} chars")
                     
                     # Strip closing tag and switch back to outside
@@ -174,6 +180,7 @@ class TagParser:
                             content_to_yield = self.buffer[:safe_to_yield_len]
                             if content_to_yield:
                                 results.append({"section": "answer", "content": content_to_yield})
+                                self.has_yielded_answer = True
                                 logger.debug(f"TagParser: Yielding partial answer content ({len(content_to_yield)} chars)")
                             self.buffer = self.buffer[safe_to_yield_len:]  # Keep last chars for lookahead
                     break
@@ -183,10 +190,59 @@ class TagParser:
         
         return results
     
+    def _clean_tag_artifacts(self, text: str) -> str:
+        """
+        Remove tag artifacts and tag-related strings from text.
+        Used when rescuing content to avoid showing garbage tags to users.
+        
+        Args:
+            text: Text that may contain tag artifacts
+            
+        Returns:
+            Cleaned text (empty string if nothing remains after cleaning)
+        """
+        if not text:
+            return ""
+        
+        cleaned = text.strip()
+        
+        # Remove closing tags that might have leaked
+        tag_artifacts = [
+            "</answer>",
+            "</thinking>",
+            "<answer>",
+            "<thinking>",
+            "</answer",
+            "</thinking",
+            "<answer",
+            "<thinking",
+            "ANSWER",
+            "THINKING",
+        ]
+        
+        # Remove artifacts from start and end
+        for artifact in tag_artifacts:
+            # Remove from start (case-insensitive)
+            while cleaned.lower().startswith(artifact.lower()):
+                cleaned = cleaned[len(artifact):].strip()
+            # Remove from end (case-insensitive)
+            while cleaned.lower().endswith(artifact.lower()):
+                cleaned = cleaned[:-len(artifact)].strip()
+        
+        # Remove any remaining tag-like patterns at boundaries
+        # Remove patterns like "</answer>" or "<answer>" anywhere if they're standalone
+        cleaned = re.sub(r'</?(?:answer|thinking)>', '', cleaned, flags=re.IGNORECASE)
+        cleaned = cleaned.strip()
+        
+        return cleaned
+    
     def flush(self) -> List[Dict[str, str]]:
         """
         Flush remaining buffer content.
         Call this at the end of streaming to yield any remaining content.
+        
+        RESCUE LOGIC: If stream ends in THINKING state and no answer was yielded,
+        treat the buffer as answer to ensure user sees content.
         """
         results = []
         
@@ -194,24 +250,48 @@ class TagParser:
         if self.state == "in_thinking" and (self.current_content or self.buffer):
             remaining = (self.current_content + self.buffer).strip()
             if remaining:
-                results.append({"section": "thinking", "content": remaining})
-                logger.info(f"TagParser: Flushing remaining thinking content ({len(remaining)} chars)")
+                # RESCUE: If we haven't yielded any answer yet, treat this as answer
+                # (Model forgot to close thinking tag and switch to answer)
+                if not self.has_yielded_answer:
+                    # Clean tag artifacts before yielding
+                    cleaned = self._clean_tag_artifacts(remaining)
+                    if cleaned:  # Only yield if there's content after cleaning
+                        results.append({"section": "answer", "content": cleaned})
+                        self.has_yielded_answer = True
+                        logger.warning(f"TagParser: Stream ended in THINKING mode. Rescuing buffer as ANSWER ({len(cleaned)} chars after cleaning)")
+                    else:
+                        logger.warning(f"TagParser: Rescued buffer was empty after cleaning tag artifacts, not yielding")
+                else:
+                    # We already have answer content, so this is truly thinking
+                    cleaned = self._clean_tag_artifacts(remaining)
+                    if cleaned:
+                        results.append({"section": "thinking", "content": cleaned})
+                        logger.info(f"TagParser: Flushing remaining thinking content ({len(cleaned)} chars)")
         elif self.state == "in_answer" and (self.current_content or self.buffer):
             remaining = (self.current_content + self.buffer).strip()
             if remaining:
-                results.append({"section": "answer", "content": remaining})
-                logger.info(f"TagParser: Flushing remaining answer content ({len(remaining)} chars)")
+                # Clean tag artifacts
+                cleaned = self._clean_tag_artifacts(remaining)
+                if cleaned:
+                    results.append({"section": "answer", "content": cleaned})
+                    self.has_yielded_answer = True
+                    logger.info(f"TagParser: Flushing remaining answer content ({len(cleaned)} chars)")
         elif self.buffer:
             # Outside tags but have content - default to answer
             remaining = self.buffer.strip()
             if remaining:
-                results.append({"section": "answer", "content": remaining})
-                logger.info(f"TagParser: Flushing remaining content as answer ({len(remaining)} chars)")
+                # Clean tag artifacts
+                cleaned = self._clean_tag_artifacts(remaining)
+                if cleaned:
+                    results.append({"section": "answer", "content": cleaned})
+                    self.has_yielded_answer = True
+                    logger.info(f"TagParser: Flushing remaining content as answer ({len(cleaned)} chars)")
         
         # Reset state
         self.buffer = ""
         self.current_content = ""
         self.state = "outside"
+        self.has_yielded_answer = False
         
         return results
 
