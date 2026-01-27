@@ -20,35 +20,15 @@ User Query: {query}
 Respond with ONLY ONE WORD: simple OR factual OR complex"""
 
 # Chain of Thought prompt for complex queries
-THINKING_PROMPT = """You are an advanced AI assistant with Chain of Thought reasoning capability.
+THINKING_PROMPT = """You are a helpful AI assistant.
 
-INSTRUCTIONS:
-1. ALWAYS start your response with a <thinking> section where you:
-   - Analyze what the user is asking
-   - Consider what information you need
-   - Plan your approach step-by-step
-   - Identify potential issues or edge cases
+For complex questions, explain your reasoning first, then provide the answer.
 
-2. Then provide your answer in an <answer> section
+Structure:
+1. Show your step-by-step reasoning
+2. Give the final answer
 
-3. In <thinking>:
-   - Be thorough but concise
-   - Show your reasoning process
-   - Don't make assumptions without stating them
-   - If you need to search or calculate, mention it
-
-4. In <answer>:
-   - Be direct and clear
-   - Use examples when helpful
-   - Cite sources if using search results
-   - Format code properly with language tags
-
-CONTEXT PROVIDED TO YOU:
-{context_block}
-
-USER QUERY: {query}
-
-Now think step-by-step, then answer."""
+Keep reasoning concise and clear."""
 
 # Simple query prompt (no thinking needed)
 SIMPLE_PROMPT = """You are a friendly, helpful AI assistant. 
@@ -65,4 +45,3 @@ Memory Context (from past conversations):
 Search Results (if applicable):
 {search_results}
 """
-

@@ -1,39 +1,26 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
+from typing import List, Literal, Optional
+from pydantic import BaseModel
 
 
 class Message(BaseModel):
-    role: Literal["user", "assistant", "system"]
+    role: str
     content: str
 
 
 class ChatRequest(BaseModel):
     messages: List[Message]
-    model: str = "gpt-4o-mini"
+    mode: Literal["auto", "pro", "fast"] = "auto"
+    model: Optional[str] = None
     stream: bool = True
-    include_thinking: bool = True  # Show thinking process to user
-
-
-class ChatResponse(BaseModel):
-    response: str
-    model: str
-    query_type: Optional[str] = None
-    thinking: Optional[str] = None
-    validation: Optional[dict] = None
+    include_thinking: Optional[bool] = None
 
 
 class ApiKeyRequest(BaseModel):
-    model: str = Field(
-        ...,
-        description=(
-            "Model name (e.g., 'gpt-4o-mini', 'claude-3-5-sonnet-20241022')"
-        ),
-    )
-    key: str = Field(..., description="API key")
+    model: str
+    key: str
 
 
 class HealthResponse(BaseModel):
     status: str
     memory_initialized: bool
     embedder_loaded: bool
-

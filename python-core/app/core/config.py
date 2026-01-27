@@ -31,3 +31,16 @@ settings = Settings()
 settings.memory_dir.mkdir(parents=True, exist_ok=True)
 settings.app_data_dir.mkdir(parents=True, exist_ok=True)
 
+# Model tiers for hybrid mode system
+MODEL_TIERS = {
+    "pro": "gemini-3-pro-preview",  # Best: thinking tokens + most powerful
+    "auto": "gemini-2.5-flash",  # Balanced: hybrid reasoning + 1M context
+    "fast": "gemini-2.0-flash",  # Fast: stable, good performance
+}
+
+# Thinking settings per mode
+THINKING_ENABLED = {
+    "pro": True,  # Always use thinking
+    "auto": "smart",  # Use thinking only for complex queries
+    "fast": False,  # Never use thinking
+}

@@ -1,33 +1,47 @@
+# --- SECURITY (CRITICAL) ---
 .env
 .env.local
-*.key
+.env.development.local
+.env.test.local
+.env.production.local
 *.pem
 
-# Python
+# --- Python Backend ---
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.venv
 .venv/
+env/
 venv/
-python-core/dist/
+python-core/.venv
 python-core/build/
+python-core/dist/
 *.spec
 
-# Node
+# --- Local Databases ---
+*.db
+*.sqlite3
+python-core/app/conversations.db
+
+# --- Node/Next.js Frontend ---
 node_modules/
-.next/
-out/
-.cache/
+/.next/
+/out/
+build/
+dist/
+.npm/
+*.log
 
-# Build artifacts
-src-tauri/target/
-src-tauri/binaries/
+# --- Tauri / Rust ---
+/src-tauri/target/
+/src-tauri/gen/
+/src-tauri/binaries/*.exe
+/src-tauri/binaries/*.msi
 
-# OS
-.DS_Store
-Thumbs.db
-
-# IDE
+# --- IDE & OS Files ---
 .vscode/
 .idea/
-*.swp
-*.swo
+.DS_Store
+Thumbs.db

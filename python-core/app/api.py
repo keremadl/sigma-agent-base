@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from app.core.config import settings
+from app.core.config import settings, MODEL_TIERS
 from app.core.prompts import THINKING_PROMPT, SIMPLE_PROMPT, CONTEXT_TEMPLATE
 from app.schemas import ChatRequest, ApiKeyRequest, HealthResponse
 from app.services.llm import generate_with_thinking, generate_stream
@@ -45,6 +45,37 @@ app.add_middleware(
 api_keys: Dict[str, str] = {}  # model_name -> api_key mapping
 
 
+def get_api_key(model: str) -> str | None:
+    """
+    Get API key for a model, handling both prefixed and non-prefixed model names.
+    
+    This ensures compatibility with keys saved as "gemini/..." or without prefix.
+    """
+    # Try exact match first
+    if model in api_keys:
+        return api_keys[model]
+    
+    # Try with "gemini/" prefix if not present
+    prefixed_model = f"gemini/{model}"
+    if prefixed_model in api_keys:
+        return api_keys[prefixed_model]
+    
+    # Try without prefix if model has prefix
+    if model.startswith("gemini/"):
+        clean_model = model.replace("gemini/", "")
+        if clean_model in api_keys:
+            return api_keys[clean_model]
+    
+    return None
+
+
+@app.on_event("startup")
+async def startup():
+    """Log configuration on startup"""
+    logger.info(f"Loaded MODEL_TIERS: {MODEL_TIERS}")
+    logger.info("Application startup complete")
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
     """Health check endpoint"""
@@ -69,97 +100,139 @@ async def chat(request: ChatRequest) -> StreamingResponse:
     """
 
     last_message = request.messages[-1].content
-    api_key = api_keys.get(request.model)
 
+    # Ensure at least one API key is available for router classification
+    if not api_keys:
+        raise HTTPException(
+            status_code=401,
+            detail="No API keys configured. Use /config/api-key endpoint first.",
+        )
+
+    mode = request.mode or "auto"
+
+    # Get API key for classification (use auto tier model)
+    router_model = MODEL_TIERS["auto"]
+    router_api_key = get_api_key(router_model)
+
+    if not router_api_key:
+        # Fallback to any available key
+        if api_keys:
+            router_api_key = next(iter(api_keys.values()))
+            logger.warning(
+                f"No API key for router model '{router_model}', using fallback key"
+            )
+        else:
+            raise HTTPException(
+                status_code=401,
+                detail="No API keys configured. Use /config/api-key endpoint first.",
+            )
+
+    # STEP 1: Classify query type
+    logger.info(f"Classifying query: {last_message[:50]}...")
+    query_type = await classify_query(last_message, router_api_key)
+
+    # STEP 2: Determine base model & thinking behaviour from mode + query type
+    if mode == "auto":
+        if query_type == "simple":
+            base_model = MODEL_TIERS["fast"]
+            use_thinking = False
+        else:
+            base_model = MODEL_TIERS["auto"]
+            use_thinking = True
+    elif mode == "pro":
+        base_model = MODEL_TIERS["pro"]
+        use_thinking = True
+    else:  # fast
+        base_model = MODEL_TIERS["fast"]
+        use_thinking = False
+
+    # Allow explicit model override from client
+    model = request.model or base_model
+
+    # Final thinking flag (client can override)
+    include_thinking = (
+        request.include_thinking
+        if request.include_thinking is not None
+        else use_thinking
+    )
+
+    # STEP 3: Look up API key for the determined model
+    api_key = get_api_key(model)
     if not api_key:
         raise HTTPException(
             status_code=401,
             detail=(
-                f"API key for model '{request.model}' not configured. "
+                f"API key for '{model}' not configured. "
                 f"Use /config/api-key endpoint first."
             ),
         )
 
+    # STEP 4: Build messages / context based on query type and mode
+    if query_type == "simple" and mode != "pro":
+        # Fast path: No memory, no thinking, use simple prompt
+        logger.info("Taking SIMPLE path")
+        prompt = SIMPLE_PROMPT.format(query=last_message)
+        messages = [{"role": "user", "content": prompt}]
+        effective_use_thinking = False
+        context_block = None
+    else:
+        # Complex/Factual path: Full pipeline
+        logger.info(f"Taking {query_type.upper()} path (mode={mode})")
+
+        # Search memory (run in thread to avoid blocking)
+        memory_task = asyncio.create_task(
+            asyncio.to_thread(memory.search_memory, last_message, n_results=3)
+        )
+
+        # Search web (placeholder for future Tavily integration)
+        search_results = ""
+        if query_type == "factual":
+            search_results = "[Web search not yet implemented]"
+
+        # Wait for memory results
+        relevant_memories = await memory_task
+        memory_context = (
+            "\n".join(relevant_memories)
+            if relevant_memories
+            else "No relevant context found"
+        )
+
+        # Build context block (not currently injected into prompt text,
+        # but kept for future use)
+        context_block = CONTEXT_TEMPLATE.format(
+            memory_context=memory_context,
+            search_results=search_results,
+        )
+
+        system_prompt = THINKING_PROMPT
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            *[{"role": m.role, "content": m.content} for m in request.messages],
+        ]
+        effective_use_thinking = include_thinking
+
     async def event_stream():
         """SSE stream generator"""
         try:
-            # STEP 1: Classify query type
-            logger.info(f"Classifying query: {last_message[:50]}...")
-            query_type = await classify_query(last_message, api_key)
-
-            # Send classification to frontend
+            # Send classification to frontend first
             yield (
                 "data: "
                 + json.dumps({"type": "classification", "query_type": query_type})
                 + "\n\n"
             )
 
-            # STEP 2: Route based on query type
-            if query_type == "simple":
-                # Fast path: No memory, no thinking, use cheap model
-                logger.info("Taking SIMPLE path")
-                prompt = SIMPLE_PROMPT.format(query=last_message)
-                messages = [{"role": "user", "content": prompt}]
-                model = "gpt-4o-mini"
-                use_thinking = False
-
-            else:
-                # Complex/Factual path: Full pipeline
-                logger.info(f"Taking {query_type.upper()} path")
-
-                # STEP 2a: Search memory (run in thread to avoid blocking)
-                memory_task = asyncio.create_task(
-                    asyncio.to_thread(
-                        memory.search_memory, last_message, n_results=3
-                    )
-                )
-
-                # STEP 2b: Search web (placeholder for future Tavily integration)
-                search_results = ""
-                if query_type == "factual":
-                    search_results = "[Web search not yet implemented]"
-
-                # Wait for memory results
-                relevant_memories = await memory_task
-                memory_context = (
-                    "\n".join(relevant_memories)
-                    if relevant_memories
-                    else "No relevant context found"
-                )
-
-                # STEP 2c: Build context block
-                context_block = CONTEXT_TEMPLATE.format(
-                    memory_context=memory_context,
-                    search_results=search_results,
-                )
-
-                # STEP 2d: Build thinking prompt
-                system_prompt = THINKING_PROMPT.format(
-                    context_block=context_block,
-                    query=last_message,
-                )
-
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    *[
-                        {"role": m.role, "content": m.content}
-                        for m in request.messages
-                    ],
-                ]
-                model = request.model
-                use_thinking = request.include_thinking
-
-            # STEP 3: Generate response (streaming)
+            # STEP 5: Generate response (streaming)
             logger.info(f"Generating response with model: {model}")
             full_response = ""
 
-            if use_thinking:
+            if effective_use_thinking:
                 # Stream with thinking/answer parsing
                 async for chunk in generate_with_thinking(
                     messages,
                     model,
                     api_key,
-                    include_thinking=request.include_thinking,
+                    include_thinking=include_thinking,
                 ):
                     full_response = chunk["full"]
                     yield (
@@ -176,20 +249,20 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             else:
                 # Simple streaming
                 async for chunk in generate_stream(messages, model, api_key):
-                    full_response += chunk
+                    full_response += chunk.get("content", "")
                     yield (
                         "data: "
                         + json.dumps(
                             {
                                 "type": "chunk",
                                 "section": "answer",
-                                "content": chunk,
+                                "content": chunk.get("content", ""),
                             }
                         )
                         + "\n\n"
                     )
 
-            # STEP 4: Validate response
+            # STEP 6: Validate response
             logger.info("Validating response...")
             validation = await validate_response(full_response, query_type)
             yield (
@@ -198,7 +271,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 + "\n\n"
             )
 
-            # STEP 5: Store in memory (skip for simple queries)
+            # STEP 7: Store in memory (skip for simple queries)
             if query_type != "simple":
                 memory_text = f"User: {last_message}\n\nAssistant: {full_response}"
                 memory_id = memory.add_memory(
@@ -260,4 +333,3 @@ def cleanup() -> None:
 
 
 atexit.register(cleanup)
-

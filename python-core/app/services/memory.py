@@ -1,119 +1,126 @@
+import logging
+from typing import List, Optional, Dict, Any
+from pathlib import Path
+
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from sentence_transformers import SentenceTransformer
+
 from app.core.config import settings
-import uuid
-import logging
 
 
 logger = logging.getLogger(__name__)
 
 
-class MemoryManager:
-    """Manages local vector memory using ChromaDB and sentence-transformers"""
+class MemoryService:
+    """
+    Manages vector embeddings and memory storage using ChromaDB
+    """
 
     def __init__(self):
+        self.collection: Optional[chromadb.Collection] = None
+        self.embedder: Optional[SentenceTransformer] = None
+        self.client: Optional[chromadb.ClientAPI] = None
+
+    def initialize(self) -> None:
+        """Initialize ChromaDB and load embedding model"""
         try:
-            # Initialize ChromaDB in persistent mode
-            logger.info(f"Initializing ChromaDB at: {settings.memory_dir}")
+            # Initialize ChromaDB client
             self.client = chromadb.PersistentClient(
                 path=str(settings.memory_dir),
-                settings=ChromaSettings(
-                    anonymized_telemetry=False,
-                    allow_reset=True,
-                ),
+                settings=ChromaSettings(anonymized_telemetry=False),
             )
 
             # Get or create collection
             self.collection = self.client.get_or_create_collection(
-                name="chat_memory",
-                metadata={"hnsw:space": "cosine"},  # Cosine similarity
+                name="conversations",
+                metadata={"hnsw:space": "cosine"},
             )
 
-            # Load local embedding model (runs on CPU)
+            # Load embedding model
             logger.info(f"Loading embedding model: {settings.embedding_model}")
             self.embedder = SentenceTransformer(settings.embedding_model)
-
-            logger.info("Memory system initialized successfully")
+            logger.info("Memory service initialized successfully")
 
         except Exception as e:
-            logger.error(f"Failed to initialize memory: {e}")
+            logger.error(f"Failed to initialize memory service: {e}", exc_info=True)
             raise
 
-    def add_memory(self, text: str, metadata: dict | None = None) -> str | None:
+    def add_memory(
+        self, text: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
         """
-        Add a memory to the vector database
+        Add a memory to the vector store
 
         Args:
-            text: The text to remember
-            metadata: Optional metadata (e.g., timestamp, model, query_type)
+            text: The text to store
+            metadata: Optional metadata dict
 
         Returns:
-            memory_id: UUID of the stored memory
+            Memory ID (UUID string)
         """
-        try:
-            # Generate embedding locally (no API call)
-            embedding = self.embedder.encode(text).tolist()
+        if not self.collection or not self.embedder:
+            raise RuntimeError("Memory service not initialized")
 
-            memory_id = str(uuid.uuid4())
+        # Generate embedding
+        embedding = self.embedder.encode(text).tolist()
 
-            self.collection.add(
-                embeddings=[embedding],
-                documents=[text],
-                metadatas=[metadata or {}],
-                ids=[memory_id],
-            )
+        # Generate ID
+        import uuid
+        memory_id = str(uuid.uuid4())
 
-            logger.debug(f"Added memory: {memory_id[:8]}...")
-            return memory_id
+        # Store in ChromaDB
+        self.collection.add(
+            ids=[memory_id],
+            embeddings=[embedding],
+            documents=[text],
+            metadatas=[metadata] if metadata else [{}],
+        )
 
-        except Exception as e:
-            logger.error(f"Failed to add memory: {e}")
-            return None
+        logger.debug(f"Added memory: {memory_id}")
+        return memory_id
 
-    def search_memory(self, query: str, n_results: int = 3) -> list[str]:
+    def search_memory(self, query: str, n_results: int = 3) -> List[str]:
         """
-        Search for relevant memories using semantic similarity
+        Search for similar memories
 
         Args:
-            query: The search query
+            query: Search query text
             n_results: Number of results to return
 
         Returns:
-            List of relevant memory texts
+            List of matching document texts
         """
+        if not self.collection or not self.embedder:
+            logger.warning("Memory service not initialized, returning empty results")
+            return []
+
         try:
             # Generate query embedding
             query_embedding = self.embedder.encode(query).tolist()
 
-            # Search in ChromaDB
+            # Search ChromaDB
             results = self.collection.query(
                 query_embeddings=[query_embedding],
                 n_results=n_results,
             )
 
             # Extract documents
-            if results["documents"] and len(results["documents"]) > 0:
-                memories = results["documents"][0]
-                logger.debug(f"Found {len(memories)} relevant memories")
-                return memories
-
+            documents = results.get("documents", [])
+            if documents and len(documents) > 0:
+                return documents[0]  # Return first (and only) query result list
             return []
 
         except Exception as e:
-            logger.error(f"Memory search failed: {e}")
+            logger.error(f"Memory search failed: {e}", exc_info=True)
             return []
-
-    def clear_all(self) -> None:
-        """Clear all memories (use with caution!)"""
-        try:
-            self.client.delete_collection("chat_memory")
-            self.collection = self.client.create_collection("chat_memory")
-            logger.info("All memories cleared")
-        except Exception as e:
-            logger.error(f"Failed to clear memories: {e}")
 
 
 # Global instance
-memory = MemoryManager()
+memory = MemoryService()
 
+# Initialize on import
+try:
+    memory.initialize()
+except Exception as e:
+    logger.error(f"Failed to initialize memory on import: {e}")
