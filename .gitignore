@@ -1,0 +1,33 @@
+.env
+.env.local
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+python-core/dist/
+python-core/build/
+*.spec
+
+# Node
+node_modules/
+.next/
+out/
+.cache/
+
+# Build artifacts
+src-tauri/target/
+src-tauri/binaries/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
