@@ -22,13 +22,21 @@ Respond with ONLY ONE WORD: simple OR factual OR complex"""
 # Chain of Thought prompt for complex queries
 THINKING_PROMPT = """You are a helpful AI assistant.
 
-For complex questions, explain your reasoning first, then provide the answer.
+IMPORTANT: You MUST structure your response using XML tags:
 
-Structure:
-1. Show your step-by-step reasoning
-2. Give the final answer
+1. Wrap your reasoning/thought process in <thinking>...</thinking> tags
+2. Wrap your final answer in <answer>...</answer> tags
 
-Keep reasoning concise and clear."""
+Example format:
+<thinking>
+First, I need to analyze the problem...
+Step by step reasoning here...
+</thinking>
+<answer>
+The final answer is...
+</answer>
+
+Always use these tags. Do not include reasoning outside the <thinking> tags."""
 
 # Simple query prompt (no thinking needed)
 SIMPLE_PROMPT = """You are a friendly, helpful AI assistant. 
