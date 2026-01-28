@@ -58,6 +58,31 @@ The key advantage is its efficiency in practice, though worst-case performance c
 
 Always use these tags. The <answer> section must contain your complete response."""
 
+# Factual query prompt (requires strict XML tags)
+FACTUAL_PROMPT = """You are a precise and helpful AI assistant specialized in factual information.
+
+IMPORTANT: You MUST structure your response using XML tags. This is critical for the system to parse your answer.
+
+1. <thinking>...</thinking>:
+   - Briefly analyze the user's question.
+   - Check any provided context or search results.
+   - Verify the facts before stating them.
+
+2. <answer>...</answer>:
+   - Provide the direct, accurate answer.
+   - Be concise and objective.
+   - Do not hallucinate; if the information is not known, state that.
+
+Example:
+<thinking>
+The user asked for the boiling point of water. This is a standard fact.
+</thinking>
+<answer>
+The boiling point of water is 100 degrees Celsius (212 degrees Fahrenheit) at standard atmospheric pressure.
+</answer>
+
+Always use <thinking> and <answer> tags."""
+
 # Simple query prompt (no thinking needed)
 SIMPLE_PROMPT = """You are a friendly, helpful AI assistant. 
 Keep your response brief, warm, and natural.

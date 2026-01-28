@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from app.core.config import settings, MODEL_TIERS
-from app.core.prompts import THINKING_PROMPT, SIMPLE_PROMPT, CONTEXT_TEMPLATE
+from app.core.prompts import THINKING_PROMPT, SIMPLE_PROMPT, CONTEXT_TEMPLATE, FACTUAL_PROMPT
 from app.schemas import (
     ChatRequest, ApiKeyRequest, HealthResponse,
     ConversationResponse, MessageResponse, ConversationListResponse,
@@ -21,7 +21,12 @@ from app.services.llm import generate_with_thinking, generate_stream
 from app.services.memory import memory
 from app.services.router import classify_query
 from app.services.validator import validate_response
+from app.services.llm import generate_with_thinking, generate_stream
+from app.services.memory import memory
+from app.services.router import classify_query
+from app.services.validator import validate_response
 from app.services.database import DatabaseService
+from app.services.tools import tools
 import litellm
 
 
@@ -277,10 +282,50 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             asyncio.to_thread(memory.search_memory, last_message, n_results=3)
         )
 
-        # Search web (placeholder for future Tavily integration)
+        # Search web if factual
         search_results = ""
         if query_type == "factual":
-            search_results = "[Web search not yet implemented]"
+            # Rewrite query to optimal English search term
+            search_query = last_message
+            try:
+                logger.info(f"Rewriting query for search: {last_message[:50]}...")
+                rewrite_response = await litellm.acompletion(
+                    model="gemini/gemini-2.0-flash-exp",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Convert the user's query to an optimal English Google search query. Return ONLY the search term, nothing else. Be concise and specific."
+                        },
+                        {
+                            "role": "user",
+                            "content": last_message
+                        }
+                    ],
+                    api_key=router_api_key,
+                    custom_llm_provider="gemini",
+                    max_tokens=50,
+                    temperature=0.3,
+                )
+                
+                rewritten = rewrite_response.choices[0].message.content
+                if rewritten and rewritten.strip():
+                    search_query = rewritten.strip()
+                    logger.info(f"Rewritten search query: {search_query}")
+                else:
+                    logger.warning("Query rewrite returned empty, using original")
+            except Exception as rewrite_err:
+                logger.warning(f"Query rewrite failed: {rewrite_err}, using original query")
+            
+            # Execute search in thread to avoid blocking
+            search_task = asyncio.create_task(
+                asyncio.to_thread(tools.search_web, search_query)
+            )
+            try:
+                search_results = await search_task
+                logger.info("Web search completed")
+            except Exception as e:
+                logger.error(f"Web search failed during execution: {e}")
+                search_results = f"[Error obtaining search results: {e}]"
 
         # Wait for memory results
         relevant_memories = await memory_task
@@ -297,7 +342,14 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             search_results=search_results,
         )
 
-        system_prompt = THINKING_PROMPT
+        if query_type == "factual":
+            system_prompt = FACTUAL_PROMPT
+        else:
+            system_prompt = THINKING_PROMPT
+        
+        # Inject context block if available
+        if context_block.strip():
+            system_prompt += f"\n\n{context_block}"
 
         messages = [
             {"role": "system", "content": system_prompt},

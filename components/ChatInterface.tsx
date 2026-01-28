@@ -91,16 +91,17 @@ export function ChatInterface({
     // If explicitly navigating from Sidebar, always load (even if streaming)
     if (isNavigatingRef.current) {
       isNavigatingRef.current = false;
+      // Clear messages immediately when switching conversations
+      setMessages([]);
       // Continue to load messages below
     } else {
       // Skip loading if:
       // 1. We're currently streaming (conversation was just created via stream)
-      // 2. We already have messages displayed (they're being streamed)
-      if (isStreaming || messages.length > 0) {
+      if (isStreaming) {
         return;
       }
     }
-    
+
     if (conversationId) {
       const loadMessages = async () => {
         setIsLoadingMessages(true);
@@ -125,7 +126,7 @@ export function ChatInterface({
       // New chat - clear messages
       setMessages([]);
     }
-  }, [conversationId, isStreaming]);
+  }, [conversationId]);
 
   // Sync external conversationId prop
   useEffect(() => {

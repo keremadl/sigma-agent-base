@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # Embedding settings
     embedding_model: str = "all-MiniLM-L6-v2"  # Local, no API cost
 
+    # Tools
+    tavily_api_key: str | None = None
+
     class Config:
         env_file = ".env"
         case_sensitive = False
