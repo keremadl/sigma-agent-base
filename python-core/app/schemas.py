@@ -54,3 +54,14 @@ class MessageListResponse(BaseModel):
 
 class TitleUpdateRequest(BaseModel):
     title: str
+
+
+class MemoryCreateRequest(BaseModel):
+    category: str  # personal, family, tech, work, preferences
+    key: str  # Brief identifier
+    value: str  # The actual information
+    importance: Optional[int] = 5  # 0-10
+
+
+class MemoryUpdateRequest(BaseModel):
+    new_value: str  # Updated value

@@ -15,7 +15,8 @@ from app.core.prompts import THINKING_PROMPT, SIMPLE_PROMPT, CONTEXT_TEMPLATE, F
 from app.schemas import (
     ChatRequest, ApiKeyRequest, HealthResponse,
     ConversationResponse, MessageResponse, ConversationListResponse,
-    MessageListResponse, TitleUpdateRequest, Message
+    MessageListResponse, TitleUpdateRequest, Message,
+    MemoryCreateRequest, MemoryUpdateRequest
 )
 from app.services.llm import generate_with_thinking, generate_stream
 from app.services.memory import memory
@@ -27,6 +28,8 @@ from app.services.router import classify_query
 from app.services.validator import validate_response
 from app.services.database import DatabaseService
 from app.services.tools import tools
+from app.services.profile import profile
+from app.services.extraction import auto_extract_memory
 import litellm
 
 
@@ -290,7 +293,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             try:
                 logger.info(f"Rewriting query for search: {last_message[:50]}...")
                 rewrite_response = await litellm.acompletion(
-                    model="gemini/gemini-2.0-flash-exp",
+                    model="gemini/gemini-2.0-flash",
                     messages=[
                         {
                             "role": "system",
@@ -335,12 +338,28 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             else "No relevant context found"
         )
 
-        # Build context block (not currently injected into prompt text,
-        # but kept for future use)
+        # SMART CONTEXT: Get relevant profile memories (max 300 tokens)
+        relevant_profile = await asyncio.to_thread(
+            profile.get_relevant_memories, last_message, max_results=5, max_tokens=300
+        )
+        
+        profile_context = ""
+        if relevant_profile:
+            profile_context = "\n".join([
+                f"- {m['key']}: {m['value']}" 
+                for m in relevant_profile
+            ])
+            logger.info(f"Injecting {len(relevant_profile)} profile memories")
+
+        # Build context block
         context_block = CONTEXT_TEMPLATE.format(
             memory_context=memory_context,
             search_results=search_results,
         )
+        
+        # Add profile context if available
+        if profile_context:
+            context_block += f"\n\nUSER INFO (verified facts about the user):\n{profile_context}"
 
         if query_type == "factual":
             system_prompt = FACTUAL_PROMPT
@@ -459,19 +478,25 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 logger.error(f"Failed to save messages to database: {db_error}", exc_info=True)
                 # Don't fail the request, just log the error
 
-            # STEP 8: Store in memory (skip for simple queries)
-            if query_type != "simple":
-                memory_text = f"User: {last_message}\n\nAssistant: {answer_to_store}"
-                memory_id = memory.add_memory(
-                    memory_text,
-                    metadata={
-                        "model": model,
-                        "query_type": query_type,
-                        "is_valid": validation["is_valid"],
-                        "conversation_id": conversation_id,
-                    },
+            # STEP 8: Store in memory (FOR ALL QUERIES)
+            memory_text = f"User: {last_message}\n\nAssistant: {answer_to_store}"
+            memory_id = memory.add_memory(
+                memory_text,
+                metadata={
+                    "model": model,
+                    "query_type": query_type,
+                    "is_valid": validation["is_valid"],
+                    "conversation_id": conversation_id,
+                },
+            )
+            logger.info(f"Stored in memory: {memory_id[:8]}...")
+            
+            # STEP 9: Auto-extract personal info (ALWAYS RUN)
+            if api_key:
+                logger.info("Triggering auto-extraction...")
+                asyncio.create_task(
+                    auto_extract_memory(last_message, answer_to_store, api_key)
                 )
-                logger.info(f"Stored in memory: {memory_id}")
 
             # Send completion signal
             yield "data: [DONE]\n\n"
@@ -555,6 +580,76 @@ async def update_conversation_title(
     except Exception as e:
         logger.error(f"Failed to update conversation title: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update conversation title")
+
+
+# ========================
+# MEMORY MANAGEMENT ENDPOINTS
+# ========================
+
+@app.get("/memory")
+async def get_memories(category: str = None, min_importance: int = None):
+    """Get all memories, optionally filtered"""
+    try:
+        if category:
+            entries = profile.get_by_category(category)
+        else:
+            entries = profile.get_all_entries(min_importance=min_importance or 0)
+        
+        return {"memories": entries, "total": len(entries)}
+    except Exception as e:
+        logger.error(f"Failed to get memories: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve memories")
+
+
+@app.post("/memory")
+async def add_memory(request: MemoryCreateRequest):
+    """Manually add a memory"""
+    try:
+        entry_id = profile.add_entry(
+            category=request.category,
+            key=request.key,
+            value=request.value,
+            source="manual_entry",
+            importance=request.importance or 5
+        )
+        return {"id": entry_id, "status": "created"}
+    except Exception as e:
+        logger.error(f"Failed to add memory: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to add memory")
+
+
+@app.delete("/memory/{entry_id}")
+async def delete_memory(entry_id: str):
+    """Delete a memory"""
+    success = profile.delete_entry(entry_id)
+    if success:
+        return {"status": "deleted"}
+    raise HTTPException(status_code=404, detail="Memory not found")
+
+
+@app.put("/memory/{entry_id}")
+async def update_memory(entry_id: str, request: MemoryUpdateRequest):
+    """Update a memory"""
+    success = profile.update_entry(entry_id, request.new_value)
+    if success:
+        return {"status": "updated"}
+    raise HTTPException(status_code=404, detail="Memory not found")
+
+
+@app.post("/memory/clear")
+async def clear_all_memories():
+    """DANGER: Clear all memories"""
+    profile.clear_all()
+    return {"status": "cleared", "warning": "All memories deleted"}
+
+
+@app.get("/memory/conflicts")
+async def check_conflicts():
+    """Check for conflicting memories"""
+    conflicts = profile.detect_conflicts()
+    # Convert tuples to list for JSON serialization
+    conflict_list = [{"entry1": c[0], "entry2": c[1]} for c in conflicts]
+    return {"conflicts": conflict_list, "count": len(conflicts)}
 
 
 @app.post("/config/api-key")
