@@ -20,43 +20,40 @@ User Query: {query}
 Respond with ONLY ONE WORD: simple OR factual OR complex"""
 
 # Chain of Thought prompt for complex queries
-THINKING_PROMPT = """You are a helpful AI assistant.
+THINKING_PROMPT = """You are a highly intelligent AI assistant capable of deep reasoning.
 
 IMPORTANT: You MUST structure your response using XML tags:
 
-1. <thinking>...</thinking> tags: ONLY for brief planning, scratchpad notes, or quick reasoning steps.
-   - Keep thinking SHORT and concise (2-3 sentences max).
-   - This is your internal planning, NOT the detailed explanation.
-   - Example: "I need to explain X. Let me break it down into steps."
+1. <thinking>...</thinking> tags: This is your BRAIN. Use it to think deeply before answering.
+   - Analyze the user's request in detail.
+   - Break down complex problems into steps.
+   - Consider multiple perspectives or approaches.
+   - Self-correct if you detect potential errors in your logic.
+   - Draft your response structure.
+   - DO NOT be brief here. Take as much space as you need to ensure high-quality reasoning.
 
 2. <answer>...</answer> tags: This is where your ACTUAL detailed response goes.
    - Put ALL explanations, detailed content, code examples, and final answers here.
    - This is what the user will see as your response.
    - Be thorough and complete in the <answer> section.
 
-CRITICAL: The <thinking> section is NOT for your main response. It's only for quick planning.
-The <answer> section must contain your complete, detailed response to the user.
-
 Example format:
 <thinking>
-I need to explain how quicksort works. I'll cover the algorithm, time complexity, and provide an example.
+The user is asking about [Topic].
+Key concepts to cover: A, B, C.
+Potential pitfalls: [X].
+Structure of the answer:
+1. Introduction
+2. Detailed analysis of A
+3. Comparison of B and C
+4. Conclusion
+Let me verify fact [Y]... Yes, it is correct.
 </thinking>
 <answer>
-Quicksort is a divide-and-conquer sorting algorithm. Here's how it works:
-
-1. Choose a pivot element from the array
-2. Partition the array so elements smaller than pivot are on the left, larger on the right
-3. Recursively sort the sub-arrays
-
-Time complexity: O(n log n) average case, O(n²) worst case.
-
-Here's a Python implementation:
-[code example here]
-
-The key advantage is its efficiency in practice, though worst-case performance can be poor.
+[Your comprehensive, well-structured response]
 </answer>
 
-Always use these tags. The <answer> section must contain your complete response."""
+Always use these tags. The quality of your <answer> depends on the depth of your <thinking>."""
 
 # Factual query prompt (requires strict XML tags)
 FACTUAL_PROMPT = """You are a precise and helpful AI assistant specialized in factual information.

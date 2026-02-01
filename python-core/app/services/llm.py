@@ -25,23 +25,26 @@ class TagParser:
         self.current_content = ""  # Content being accumulated for current section
         self.has_yielded_answer = False  # Track if we've yielded any answer content
         # Tag definitions
-        self.THINKING_OPEN = "<thinking>"
+        self.THINKING_OPEN_VARIANTS = ["<thinking>", "<think>"]
+        self.THINKING_CLOSE_VARIANTS = ["</thinking>", "</think>"]
+        
+        # Primary tags for logic (we'll normalize to these or check variants)
+        self.THINKING_OPEN = "<thinking>" 
         self.THINKING_CLOSE = "</thinking>"
         self.ANSWER_OPEN = "<answer>"
         self.ANSWER_CLOSE = "</answer>"
-        self.MAX_TAG_LEN = max(len(self.THINKING_OPEN), len(self.THINKING_CLOSE), 
-                               len(self.ANSWER_OPEN), len(self.ANSWER_CLOSE))
+        
+        # Calculate max tag len based on all variants
+        self.MAX_TAG_LEN = max(
+            len(self.ANSWER_OPEN), len(self.ANSWER_CLOSE),
+            *[len(t) for t in self.THINKING_OPEN_VARIANTS],
+            *[len(t) for t in self.THINKING_CLOSE_VARIANTS]
+        )
     
     def process_chunk(self, chunk: str) -> List[Dict[str, str]]:
         """
         Process chunk and return list of parsed sections.
         Streams content incrementally as it's parsed.
-        
-        Args:
-            chunk: New chunk of text to process
-            
-        Returns:
-            List of dicts with "section" and "content" keys
         """
         if not chunk:
             return []
@@ -54,26 +57,34 @@ class TagParser:
             made_progress = False
             
             if self.state == "outside":
-                # Look for opening tags
-                thinking_start = self.buffer.find(self.THINKING_OPEN)
+                # Find earliest occurrence of any thinking open tag
+                thinking_start = -1
+                matched_thinking_tag = ""
+                for tag in self.THINKING_OPEN_VARIANTS:
+                    pos = self.buffer.find(tag)
+                    if pos != -1:
+                        if thinking_start == -1 or pos < thinking_start:
+                            thinking_start = pos
+                            matched_thinking_tag = tag
+
                 answer_start = self.buffer.find(self.ANSWER_OPEN)
                 
                 # Determine which tag comes first
                 if thinking_start != -1 and (answer_start == -1 or thinking_start < answer_start):
-                    # Found <thinking> first
+                    # Found thinking tag first
                     if thinking_start > 0:
                         # Content before tag - treat as answer (fallback)
                         pre_content = self.buffer[:thinking_start].strip()
                         if pre_content:
                             results.append({"section": "answer", "content": pre_content})
                             self.has_yielded_answer = True
-                            logger.info(f"TagParser: Found content before <thinking> tag, yielding as answer ({len(pre_content)} chars)")
+                            logger.info(f"TagParser: Found content before thinking tag, yielding as answer ({len(pre_content)} chars)")
                     
                     # Strip the tag and switch to thinking mode
-                    self.buffer = self.buffer[thinking_start + len(self.THINKING_OPEN):]
+                    self.buffer = self.buffer[thinking_start + len(matched_thinking_tag):]
                     self.state = "in_thinking"
                     self.current_content = ""
-                    logger.info("TagParser: Switching to THINKING mode")
+                    logger.info(f"TagParser: Switching to THINKING mode (found {matched_thinking_tag})")
                     made_progress = True
                     
                 elif answer_start != -1:
@@ -94,7 +105,6 @@ class TagParser:
                     made_progress = True
                 else:
                     # No complete tags found - check if buffer ends with partial tag
-                    # Keep enough chars in buffer to detect split tags
                     safe_to_yield_len = len(self.buffer) - self.MAX_TAG_LEN
                     if safe_to_yield_len > 0:
                         # Check if the end of buffer could be start of a tag
@@ -102,8 +112,13 @@ class TagParser:
                         could_be_tag = False
                         
                         # Check if buffer end matches start of any opening tag
-                        if self.THINKING_OPEN.startswith(buffer_end) or self.ANSWER_OPEN.startswith(buffer_end):
+                        if self.ANSWER_OPEN.startswith(buffer_end):
                             could_be_tag = True
+                        else:
+                            for tag in self.THINKING_OPEN_VARIANTS:
+                                if tag.startswith(buffer_end):
+                                    could_be_tag = True
+                                    break
                         
                         if not could_be_tag:
                             # Safe to yield content
@@ -116,8 +131,15 @@ class TagParser:
                     break
             
             elif self.state == "in_thinking":
-                # Look for </thinking> closing tag
-                thinking_end = self.buffer.find(self.THINKING_CLOSE)
+                # Look for any closing tag variant
+                thinking_end = -1
+                matched_closing_tag = ""
+                for tag in self.THINKING_CLOSE_VARIANTS:
+                    pos = self.buffer.find(tag)
+                    if pos != -1:
+                        if thinking_end == -1 or pos < thinking_end:
+                            thinking_end = pos
+                            matched_closing_tag = tag
                 
                 if thinking_end != -1:
                     # Found closing tag - yield remaining content
@@ -127,18 +149,25 @@ class TagParser:
                         logger.info(f"TagParser: Exiting THINKING mode, yielded {len(content_to_yield)} chars")
                     
                     # Strip closing tag and switch back to outside
-                    self.buffer = self.buffer[thinking_end + len(self.THINKING_CLOSE):]
+                    self.buffer = self.buffer[thinking_end + len(matched_closing_tag):]
                     self.state = "outside"
                     self.current_content = ""
                     made_progress = True
                 else:
                     # No closing tag yet - check if we can safely yield partial content
-                    # Keep enough chars to detect split closing tag
-                    safe_to_yield_len = len(self.buffer) - len(self.THINKING_CLOSE)
+                    # We need to be careful not to split a potential closing tag
+                    # Use the longest closing tag variant for safety margin
+                    max_close_len = max(len(t) for t in self.THINKING_CLOSE_VARIANTS)
+                    safe_to_yield_len = len(self.buffer) - max_close_len
+                    
                     if safe_to_yield_len > 0:
                         # Check if buffer end could be start of closing tag
-                        buffer_end = self.buffer[-len(self.THINKING_CLOSE):]
-                        could_be_closing = self.THINKING_CLOSE.startswith(buffer_end)
+                        buffer_end = self.buffer[-max_close_len:]
+                        could_be_closing = False
+                        for tag in self.THINKING_CLOSE_VARIANTS:
+                            if tag.startswith(buffer_end):
+                                could_be_closing = True
+                                break
                         
                         if not could_be_closing:
                             # Safe to yield - yield only the new portion
@@ -146,7 +175,7 @@ class TagParser:
                             if content_to_yield:
                                 results.append({"section": "thinking", "content": content_to_yield})
                                 logger.debug(f"TagParser: Yielding partial thinking content ({len(content_to_yield)} chars)")
-                            self.buffer = self.buffer[safe_to_yield_len:]  # Keep last chars for lookahead
+                            self.buffer = self.buffer[safe_to_yield_len:]
                     break
             
             elif self.state == "in_answer":
@@ -168,7 +197,6 @@ class TagParser:
                     made_progress = True
                 else:
                     # No closing tag yet - check if we can safely yield partial content
-                    # Keep enough chars to detect split closing tag
                     safe_to_yield_len = len(self.buffer) - len(self.ANSWER_CLOSE)
                     if safe_to_yield_len > 0:
                         # Check if buffer end could be start of closing tag
@@ -348,19 +376,6 @@ async def generate_stream(
         if custom_provider:
             completion_kwargs["custom_llm_provider"] = custom_provider
 
-        # CRITICAL FIX: Set temperature = 1.0 for Gemini 3 Pro to avoid infinite loops
-        # Add thinkingConfig for Gemini 3 Pro native thinking mode
-        if model == "gemini-3-pro-preview":
-            completion_kwargs["temperature"] = 1.0  # Required! Prevents infinite loops
-            completion_kwargs["extra_body"] = {
-                "thinkingConfig": {
-                    "thinkingLevel": "high"
-                }
-            }
-            logger.info("Enabled native thinking mode for Gemini 3 Pro")
-            logger.info(f"thinkingConfig: {completion_kwargs.get('extra_body')}")
-            logger.info(f"Temperature set to: {completion_kwargs.get('temperature')}")
-
         response = await litellm.acompletion(**completion_kwargs)
 
         chunk_count = 0
@@ -492,8 +507,21 @@ async def generate_with_thinking(
         parser = TagParser()
         
         async for chunk_dict in generate_stream(messages, model, api_key, temperature):
+            # Handle native thinking chunks (e.g. from Gemini 3 Pro)
+            if chunk_dict.get("type") == "thinking":
+                if include_thinking:
+                    yield {
+                        "section": "thinking",
+                        "content": chunk_dict["content"],
+                        "full": full_response,
+                    }
+                continue
+
             # generate_stream yields content chunks for all models
             chunk_content = chunk_dict.get("content", "")
+            if not chunk_content:
+                continue
+
             full_response += chunk_content
             
             # Process chunk through state machine parser

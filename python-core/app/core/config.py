@@ -36,9 +36,9 @@ settings.app_data_dir.mkdir(parents=True, exist_ok=True)
 
 # Model tiers for hybrid mode system
 MODEL_TIERS = {
-    "pro": "gemini-3-pro-preview",  # Best: thinking tokens + most powerful
-    "auto": "gemini-2.5-flash",  # Balanced: hybrid reasoning + 1M context
-    "fast": "gemini-2.0-flash",  # Fast: stable, good performance
+    "pro": "gemini/gemini-3-pro-preview",  # Newest Gemini 3 Pro (Nov 2025)
+    "auto": "gemini/gemini-3-flash-preview",  # Newest Gemini 3 Flash (Dec 2025)
+    "fast": "gemini/gemini-3-flash-preview",  # Flash is fast enough
 }
 
 # Thinking settings per mode

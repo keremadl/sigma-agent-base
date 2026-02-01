@@ -14,6 +14,7 @@ interface MessageBubbleProps {
   thinking?: string;
   queryType?: string;
   validation?: ValidationInfo;
+  isStreaming?: boolean;
 }
 
 export function MessageBubble({
@@ -22,6 +23,7 @@ export function MessageBubble({
   thinking,
   queryType,
   validation,
+  isStreaming,
 }: MessageBubbleProps) {
   const isUser = role === "user";
 
@@ -44,7 +46,9 @@ export function MessageBubble({
           </div>
         )}
 
-        {thinking && !isUser && <ThinkingPanel thinking={thinking} />}
+        {thinking && !isUser && (
+          <ThinkingPanel thinking={thinking} isThinking={isStreaming} />
+        )}
 
         <div className="whitespace-pre-wrap">{content}</div>
 

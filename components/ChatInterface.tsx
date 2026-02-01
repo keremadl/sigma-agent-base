@@ -305,6 +305,7 @@ export function ChatInterface({
                   thinking={msg.thinking}
                   queryType={msg.queryType}
                   validation={msg.validation}
+                  isStreaming={isStreaming && idx === messages.length - 1 && msg.role === "assistant"}
                 />
               ))}
               <div ref={scrollRef} />

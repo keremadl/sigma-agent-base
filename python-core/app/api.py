@@ -361,15 +361,37 @@ async def chat(request: ChatRequest) -> StreamingResponse:
         if profile_context:
             context_block += f"\n\nUSER INFO (verified facts about the user):\n{profile_context}"
 
-        if query_type == "factual":
-            system_prompt = FACTUAL_PROMPT
-        else:
-            system_prompt = THINKING_PROMPT
+        # PROMPT SELECTION STRATEGY
+        is_native_reasoning = "deepseek" in model.lower() or "gemini-3-pro" in model.lower() or "r1" in model.lower()
         
-        # Inject context block if available
-        if context_block.strip():
-            system_prompt += f"\n\n{context_block}"
+        if is_native_reasoning:
+            # Native Reasoning Models (DeepSeek R1, Gemini 3 Pro)
+            # Strategy: Minimal system prompt, NO XML enforcement (model does it naturally)
+            logger.info(f"Using NATIVE reasoning strategy for {model}")
+            
+            if context_block.strip():
+                system_prompt = f"Use the following context to answer the user's question:\n\n{context_block}"
+            else:
+                system_prompt = "You are a helpful AI assistant."
+                
+        else:
+            # Traditional Models (GPT-4o, Claude 3.5, etc.)
+            # Strategy: Prompt Engineering (Chain of Thought via XML tags)
+            logger.info(f"Using PROMPT-BASED reasoning strategy for {model}")
+            
+            if query_type == "factual":
+                system_prompt = FACTUAL_PROMPT
+            else:
+                system_prompt = THINKING_PROMPT
+            
+            # Inject context block if available
+            if context_block.strip():
+                system_prompt += f"\n\n{context_block}"
 
+        # Construct messages
+        # For DeepSeek R1, some guides suggest avoiding system prompts entirely, 
+        # but we need to inject context. Putting context in user message or system message is debated.
+        # We'll stick to system message for now as LiteLLM handles it.
         messages = [
             {"role": "system", "content": system_prompt},
             *[{"role": m.role, "content": m.content} for m in request.messages],
